@@ -3,8 +3,8 @@ module github.com/hsiaoairplane/vault-operator-helper
 go 1.25.0
 
 require (
-	k8s.io/api v0.35.3
-	k8s.io/apimachinery v0.35.3
+	k8s.io/api v0.35.4
+	k8s.io/apimachinery v0.35.4
 	k8s.io/client-go v0.35.3
 )
 
