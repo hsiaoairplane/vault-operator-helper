@@ -12,7 +12,7 @@ RUN go mod download
 COPY . .
 
 # Build the application
-RUN CGO_ENABLED=0 GOOS=linux go build -o vault-operator-helper main.go
+RUN CGO_ENABLED=0 GOOS=linux go build -o vault-operator-helper .
 
 # Use a minimal runtime image
 FROM alpine:latest
