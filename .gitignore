@@ -11,6 +11,9 @@
 # Test binary, built with `go test -c`
 *.test
 
+# Compiled binary produced by `make build`
+/vault-operator-helper
+
 # Output of the go coverage tool, specifically when used with LiteIDE
 *.out
 

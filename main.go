@@ -14,6 +14,7 @@ import (
 	"time"
 
 	v1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
@@ -29,8 +30,12 @@ var (
 	watchKey           string
 	mainContainerName  string
 
-	clientset *kubernetes.Clientset
+	clientset kubernetes.Interface
 	lock      sync.Mutex
+
+	// restartMainContainer is the action used to reload the ConfigMap.
+	// It is a variable so tests can override it.
+	restartMainContainer = killMainContainer
 )
 
 func init() {
@@ -40,12 +45,12 @@ func init() {
 	flag.StringVar(&labelSelector, "label-selector", "foo=bar", "Label selector for namespaces to watch")
 	flag.StringVar(&watchKey, "watch-key", "WATCH_NAMESPACE", "Key in the ConfigMap to store namespace list")
 	flag.StringVar(&mainContainerName, "main-container", "main-container", "Name of the main container to restart")
-
-	// Parse flags
-	flag.Parse()
 }
 
 func main() {
+	// Parse flags
+	flag.Parse()
+
 	config, err := getKubeConfig()
 	if err != nil {
 		fmt.Printf("Error getting Kubernetes config: %v\n", err)
@@ -64,9 +69,6 @@ func main() {
 	// Set up signal handling for graceful shutdown
 	stopCh := make(chan struct{})
 	signalCh := make(chan os.Signal, 1)
-
-	// Listen for termination signals
-	signal.Notify(signalCh, syscall.SIGTERM, syscall.SIGINT)
 
 	// Listen for termination signals
 	signal.Notify(signalCh, syscall.SIGTERM, syscall.SIGINT)
@@ -143,8 +145,12 @@ func updateConfigMap() {
 	// Fetch the existing ConfigMap
 	cm, err := clientset.CoreV1().ConfigMaps(configMapNamespace).Get(context.TODO(), configMapName, metav1.GetOptions{})
 	if err != nil {
-		// If ConfigMap doesn't exist, create it
-		createConfigMap(newValue)
+		if apierrors.IsNotFound(err) {
+			// If ConfigMap doesn't exist, create it
+			createConfigMap(newValue)
+		} else {
+			fmt.Printf("Error getting ConfigMap: %v\n", err)
+		}
 		return
 	}
 
@@ -153,7 +159,10 @@ func updateConfigMap() {
 		return
 	}
 
-	// Update ConfigMap
+	// Update ConfigMap (Data may be nil if the ConfigMap was created without any data)
+	if cm.Data == nil {
+		cm.Data = make(map[string]string)
+	}
 	cm.Data[watchKey] = newValue
 	_, err = clientset.CoreV1().ConfigMaps(configMapNamespace).Update(context.TODO(), cm, metav1.UpdateOptions{})
 	if err != nil {
@@ -162,7 +171,7 @@ func updateConfigMap() {
 	}
 
 	// Trigger restart of the main container
-	killMainContainer()
+	restartMainContainer()
 }
 
 // getFilteredNamespaces retrieves namespaces with the specified label
