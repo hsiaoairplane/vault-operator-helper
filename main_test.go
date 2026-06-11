@@ -7,12 +7,14 @@ import (
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes/fake"
 )
 
 // setupTest configures the package globals for a test run and returns the fake
-// clientset so assertions can be made against it. The main-container restart is
-// stubbed out so tests never shell out to pgrep/kill.
+// clientset so assertions can be made against it. A namespace lister backed by
+// the fake clientset is wired up the same way production does, and the
+// main-container restart is stubbed out so tests never shell out to pgrep/kill.
 func setupTest(t *testing.T, objects ...runtime.Object) *fake.Clientset {
 	t.Helper()
 
@@ -21,22 +23,33 @@ func setupTest(t *testing.T, objects ...runtime.Object) *fake.Clientset {
 	configMapName = "watch-namespace-config"
 	configMapNamespace = "vault"
 	watchKey = "WATCH_NAMESPACE"
-	// Empty selector: the fake clientset does not apply label-selector filtering,
-	// so keep tests independent of that behaviour.
+	// Empty selector matches every namespace; the lister applies the selector
+	// in-memory, so tests stay independent of any pre-filtering.
 	labelSelector = ""
 
 	clientset = cs
 
+	// Build and sync a namespace lister from the fake clientset.
+	factory := informers.NewSharedInformerFactory(cs, 0)
+	namespaceLister = factory.Core().V1().Namespaces().Lister()
+	stopCh := make(chan struct{})
+	factory.Start(stopCh)
+	factory.WaitForCacheSync(stopCh)
+
 	restartMainContainer = func() {}
-	t.Cleanup(func() { restartMainContainer = killMainContainer })
+	t.Cleanup(func() {
+		close(stopCh)
+		restartMainContainer = killMainContainer
+		namespaceLister = nil
+	})
 
 	return cs
 }
 
 func TestGetFilteredNamespaces(t *testing.T) {
 	setupTest(t,
-		&v1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "team-a"}},
 		&v1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "team-b"}},
+		&v1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "team-a"}},
 	)
 
 	got, err := getFilteredNamespaces()
@@ -44,13 +57,15 @@ func TestGetFilteredNamespaces(t *testing.T) {
 		t.Fatalf("getFilteredNamespaces returned error: %v", err)
 	}
 
-	want := map[string]bool{"team-a": true, "team-b": true}
+	// Result must be sorted for a stable, restart-friendly ConfigMap value.
+	want := []string{"team-a", "team-b"}
 	if len(got) != len(want) {
-		t.Fatalf("got %d namespaces (%v), want %d", len(got), got, len(want))
+		t.Fatalf("got %d namespaces (%v), want %v", len(got), got, want)
 	}
-	for _, ns := range got {
-		if !want[ns] {
-			t.Errorf("unexpected namespace %q in result", ns)
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("got %v, want %v (not sorted)", got, want)
+			break
 		}
 	}
 }
@@ -60,7 +75,7 @@ func TestUpdateConfigMap_CreatesWhenMissing(t *testing.T) {
 		&v1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "team-a"}},
 	)
 
-	updateConfigMap()
+	updateConfigMap(context.Background())
 
 	cm, err := cs.CoreV1().ConfigMaps(configMapNamespace).Get(context.TODO(), configMapName, metav1.GetOptions{})
 	if err != nil {
@@ -83,7 +98,7 @@ func TestUpdateConfigMap_NilData(t *testing.T) {
 	)
 
 	// Would panic before the nil-map guard was added.
-	updateConfigMap()
+	updateConfigMap(context.Background())
 
 	cm, err := cs.CoreV1().ConfigMaps(configMapNamespace).Get(context.TODO(), configMapName, metav1.GetOptions{})
 	if err != nil {
@@ -103,7 +118,7 @@ func TestUpdateConfigMap_NoChangeKeepsValue(t *testing.T) {
 		},
 	)
 
-	updateConfigMap()
+	updateConfigMap(context.Background())
 
 	cm, err := cs.CoreV1().ConfigMaps(configMapNamespace).Get(context.TODO(), configMapName, metav1.GetOptions{})
 	if err != nil {
