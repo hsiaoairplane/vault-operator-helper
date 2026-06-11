@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	v1 "k8s.io/api/core/v1"
@@ -106,6 +108,14 @@ func TestUpdateConfigMap_NilData(t *testing.T) {
 	}
 	if cm.Data[watchKey] != "team-a" {
 		t.Errorf("got %q, want %q", cm.Data[watchKey], "team-a")
+	}
+}
+
+func TestHealthHandler(t *testing.T) {
+	rec := httptest.NewRecorder()
+	healthHandler(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if rec.Code != http.StatusOK {
+		t.Errorf("healthHandler status = %d, want %d", rec.Code, http.StatusOK)
 	}
 }
 

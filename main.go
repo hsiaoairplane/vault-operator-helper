@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -33,6 +34,7 @@ var (
 	labelSelector      string
 	watchKey           string
 	mainContainerName  string
+	healthAddr         string
 
 	clientset       kubernetes.Interface
 	namespaceLister corelisters.NamespaceLister
@@ -50,6 +52,7 @@ func init() {
 	flag.StringVar(&labelSelector, "label-selector", "foo=bar", "Label selector for namespaces to watch")
 	flag.StringVar(&watchKey, "watch-key", "WATCH_NAMESPACE", "Key in the ConfigMap to store namespace list")
 	flag.StringVar(&mainContainerName, "main-container", "main-container", "Name of the main container to restart")
+	flag.StringVar(&healthAddr, "health-addr", ":8081", "Address for the liveness (/healthz) and readiness (/readyz) probe server")
 }
 
 func main() {
@@ -69,6 +72,9 @@ func main() {
 	// Cancel the context on SIGTERM/SIGINT for graceful shutdown.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
+
+	// Serve the liveness probe for the duration of the process.
+	startHealthServer()
 
 	// Start the namespace watcher and wait for its cache to sync.
 	if err := watchNamespaces(ctx); err != nil {
@@ -108,6 +114,26 @@ func getKubeConfig() (*rest.Config, error) {
 
 	log.Println("Using local kubeconfig")
 	return config, nil
+}
+
+// healthHandler returns 200 once the process is running. It is used for the
+// liveness probe.
+func healthHandler(w http.ResponseWriter, _ *http.Request) {
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("ok"))
+}
+
+// startHealthServer runs an HTTP server exposing the /healthz liveness probe.
+func startHealthServer() {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", healthHandler)
+
+	go func() {
+		log.Printf("Serving health probe on %s", healthAddr)
+		if err := http.ListenAndServe(healthAddr, mux); err != nil && err != http.ErrServerClosed {
+			log.Printf("Health server error: %v", err)
+		}
+	}()
 }
 
 // watchNamespaces starts an informer that monitors namespace changes and keeps
